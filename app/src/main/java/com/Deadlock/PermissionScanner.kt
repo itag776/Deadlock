@@ -10,11 +10,18 @@ import android.os.Build
 data class AppRiskInfo(
     val appName: String,
     val packageName: String,
-    val riskScore: Int, // 0-10 normalized
-    val riskLevel: String, // Low, Medium, High
-    val grantedPermissions: List<String>,
+    val riskScore: Int,
+    val riskLevel: String,
+    val grantedPermissions: List<PermissionDetail>,
     val isRealGranted: Boolean,
-    val riskExplanation: String
+    val riskExplanation: String,
+    val packageInfo: PackageInfo
+)
+
+data class PermissionDetail(
+    val rawName: String,
+    val readableName: String,
+    val severity: String
 )
 
 class PermissionScanner(private val context: Context) {
@@ -31,25 +38,30 @@ class PermissionScanner(private val context: Context) {
             pm.getInstalledPackages(flags)
         }
 
+        // PHASE 2: Fetch ALL apps, no filtering here
         return packages.map { pack ->
             val appName = pack.applicationInfo?.loadLabel(pm)?.toString() ?: pack.packageName
             val (granted, isReal) = getGrantedPermissions(pack)
             
-            // Filter only standard android permissions
-            val filteredPermissions = granted.filter { it.startsWith("android.permission.") }
-            
-            val scoreResult = calculateNormalizedScore(filteredPermissions)
+            val permissionDetails = granted
+                .filter { it.startsWith("android.permission.") }
+                .map { mapToPermissionDetail(it) }
+                .filter { it.readableName.isNotEmpty() }
+                .distinctBy { it.readableName }
+
+            val scoreResult = calculateNormalizedScore(permissionDetails)
 
             AppRiskInfo(
                 appName = appName,
                 packageName = pack.packageName,
                 riskScore = scoreResult.score,
                 riskLevel = scoreResult.level,
-                grantedPermissions = filteredPermissions,
+                grantedPermissions = permissionDetails,
                 isRealGranted = isReal,
-                riskExplanation = scoreResult.explanation
+                riskExplanation = scoreResult.explanation,
+                packageInfo = pack
             )
-        }.sortedByDescending { it.riskScore }
+        }
     }
 
     private fun getGrantedPermissions(pack: PackageInfo): Pair<List<String>, Boolean> {
@@ -67,45 +79,56 @@ class PermissionScanner(private val context: Context) {
         return granted to true
     }
 
+    private fun mapToPermissionDetail(permission: String): PermissionDetail {
+        val (readable, severity) = when (permission) {
+            "android.permission.CAMERA" -> "Can use your camera" to "Critical"
+            "android.permission.RECORD_AUDIO" -> "Can access your microphone" to "Critical"
+            "android.permission.ACCESS_FINE_LOCATION" -> "Can track your precise location" to "Critical"
+            "android.permission.ACCESS_COARSE_LOCATION" -> "Can track your approximate location" to "Sensitive"
+            "android.permission.READ_SMS" -> "Can read your messages" to "Critical"
+            "android.permission.SEND_SMS" -> "Can send messages" to "Critical"
+            "android.permission.RECEIVE_SMS" -> "Can intercept incoming messages" to "Critical"
+            "android.permission.READ_CONTACTS" -> "Can read your contacts" to "Critical"
+            "android.permission.READ_CALL_LOG" -> "Can view your call history" to "Critical"
+            "android.permission.READ_EXTERNAL_STORAGE", 
+            "android.permission.WRITE_EXTERNAL_STORAGE" -> "Can access your files & photos" to "Sensitive"
+            "android.permission.READ_PHONE_STATE" -> "Can read phone identity & status" to "Sensitive"
+            "android.permission.INTERNET" -> "Has internet access" to "Basic"
+            "android.permission.ACCESS_NETWORK_STATE" -> "Can view network connections" to "Basic"
+            else -> "" to "Other"
+        }
+        return PermissionDetail(permission, readable, severity)
+    }
+
     private data class ScoreResult(val score: Int, val level: String, val explanation: String)
 
-    private fun calculateNormalizedScore(permissions: List<String>): ScoreResult {
+    private fun calculateNormalizedScore(details: List<PermissionDetail>): ScoreResult {
         var totalWeight = 0
-        val highRisk = mutableListOf<String>()
+        val highRiskNames = mutableListOf<String>()
         
-        for (p in permissions) {
-            totalWeight += when (p) {
-                "android.permission.CAMERA" -> { highRisk.add("camera"); 3 }
-                "android.permission.RECORD_AUDIO" -> { highRisk.add("microphone"); 3 }
-                "android.permission.ACCESS_FINE_LOCATION" -> { highRisk.add("location"); 3 }
-                "android.permission.READ_SMS", "android.permission.SEND_SMS", "android.permission.RECEIVE_SMS" -> { highRisk.add("SMS"); 3 }
-                "android.permission.READ_CONTACTS" -> { highRisk.add("contacts"); 3 }
-                "android.permission.READ_CALL_LOG" -> { highRisk.add("call logs"); 3 }
-                
-                "android.permission.READ_EXTERNAL_STORAGE", "android.permission.WRITE_EXTERNAL_STORAGE" -> 2
-                "android.permission.READ_PHONE_STATE" -> 2
-                
-                "android.permission.INTERNET" -> 1
-                "android.permission.ACCESS_NETWORK_STATE" -> 1
+        details.forEach { detail ->
+            totalWeight += when (detail.severity) {
+                "Critical" -> {
+                    highRiskNames.add(detail.readableName.lowercase().removePrefix("can "))
+                    3
+                }
+                "Sensitive" -> 2
+                "Basic" -> 1
                 else -> 0
             }
         }
 
-        // Normalize to 10 (arbitrary max weight for normalization, say 15)
-        val normalized = ((totalWeight / 15f) * 10).toInt().coerceIn(0, 10)
-        
+        val normalized = ((totalWeight / 12f) * 10).toInt().coerceIn(0, 10)
         val level = when {
             normalized >= 7 -> "High"
             normalized >= 4 -> "Medium"
             else -> "Low"
         }
 
-        val explanation = if (highRisk.isNotEmpty()) {
-            "This app can access your ${highRisk.distinct().joinToString(" and ")}, which may expose private data."
-        } else if (normalized > 0) {
-            "This app has access to some device features and connectivity."
+        val explanation = if (highRiskNames.isNotEmpty()) {
+            "Allowed to ${highRiskNames.distinct().take(2).joinToString(" and ")}."
         } else {
-            "This app follows privacy-first guidelines with minimal access."
+            "Minimal data access detected."
         }
 
         return ScoreResult(normalized, level, explanation)

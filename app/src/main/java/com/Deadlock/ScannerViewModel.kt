@@ -2,6 +2,8 @@
 package com.Deadlock
 
 import android.app.Application
+import android.content.pm.ApplicationInfo
+import android.util.Log
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -25,6 +27,7 @@ class ScannerViewModel(application: Application) : AndroidViewModel(application)
         private set
 
     private val scanner = PermissionScanner(application)
+    private val packageManager = application.packageManager
     private var cachedApps: List<AppRiskInfo>? = null
 
     init {
@@ -32,7 +35,6 @@ class ScannerViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun startAudit(refresh: Boolean = false) {
-        // Use cache if available and not refreshing
         if (!refresh && cachedApps != null) {
             uiState = ScannerUiState.Success(cachedApps!!)
             return
@@ -44,12 +46,25 @@ class ScannerViewModel(application: Application) : AndroidViewModel(application)
 
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                val results = scanner.scanApps()
-                cachedApps = results
+                val allApps = scanner.scanApps()
+                Log.d("SCAN_DEBUG", "Total scanned: ${allApps.size}")
+
+                // PHASE 3: Correct filtering logic
+                val visibleApps = allApps.filter { app ->
+                    val appInfo = app.packageInfo.applicationInfo ?: return@filter false
+                    
+                    val isUserApp = (appInfo.flags and ApplicationInfo.FLAG_SYSTEM) == 0
+                    val hasLauncher = packageManager.getLaunchIntentForPackage(app.packageName) != null
+                    
+                    isUserApp || hasLauncher
+                }
+                
+                Log.d("SCAN_DEBUG", "Visible apps: ${visibleApps.size}")
+                cachedApps = visibleApps
 
                 withContext(Dispatchers.Main) {
-                    uiState = if (results.isNotEmpty()) {
-                        ScannerUiState.Success(results)
+                    uiState = if (visibleApps.isNotEmpty()) {
+                        ScannerUiState.Success(visibleApps)
                     } else {
                         ScannerUiState.Empty
                     }
