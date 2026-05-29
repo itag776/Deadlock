@@ -27,11 +27,11 @@ DeadLock uses a weighted scoring system to determine an app's risk level:
 3.  **Basic (1 Point):** Internet access and network state viewing.
 
 The total weight is calculated, normalized on a 10-point scale, and assigned a severity level:
-* 🔴 **High Risk:** Score 7-10
-* 🟡 **Medium Risk:** Score 4-6
-* 🔵 **Low Risk/Safe:** Score 0-3
+*  **High Risk:** Score 7-10
+*  **Medium Risk:** Score 4-6
+* **Low Risk/Safe:** Score 0-3
 
-## 🚀 Getting Started
+##  Getting Started
 
 ### Prerequisites
 * Android Studio (Latest version recommended)
